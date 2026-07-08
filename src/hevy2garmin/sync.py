@@ -130,7 +130,7 @@ def sync(
     merge_activity_types = set(cfg.get("merge_activity_types", ["strength_training"]))
     merge_watch_strategy = cfg.get("merge_watch_strategy", "replace")
     description_enabled = cfg.get("description_enabled", True)
-    stats = {"synced": 0, "skipped": 0, "failed": 0, "total": len(workouts), "unmapped": [], "merged": 0, "merge_fallback": 0, "deferred": 0, "no_hr": 0}
+    stats = {"synced": 0, "skipped": 0, "failed": 0, "total": len(workouts), "unmapped": [], "merged": 0, "merge_fallback": 0, "deferred": 0, "no_hr": 0, "duplicates": 0}
 
     if merge_mode:
         reset_circuit_breaker()
@@ -274,6 +274,17 @@ def sync(
     if stats["unmapped"]:
         logger.warning("\nUnmapped exercises: %s", ", ".join(stats["unmapped"]))
         logger.warning("Add custom mappings: hevy2garmin map \"Exercise Name\" --category N --subcategory N")
+
+    # Log-only duplicate scan (best-effort; never breaks a sync).
+    if not dry_run and garmin_client:
+        try:
+            from hevy2garmin.reconcile import detect_duplicates
+            dups = detect_duplicates(garmin_client, workouts, _hr_limiter)
+            stats["duplicates"] = len(dups)
+            if dups:
+                logger.warning("Found %d possible duplicate activity pair(s) from past races", len(dups))
+        except Exception:
+            logger.debug("duplicate scan skipped", exc_info=True)
 
     # Record to sync log (shows up in dashboard)
     trigger = "cli"

@@ -307,3 +307,28 @@ def test_no_hr_not_counted_on_dedup_path(mock_hr, *rest):
     mock_upload.assert_not_called()   # dedup: nothing uploaded
     assert stats["no_hr"] == 0        # so no_hr must not fire
     assert stats["synced"] == 1
+
+
+@patch("hevy2garmin.sync.db")
+@patch("hevy2garmin.sync.get_client")
+@patch("hevy2garmin.sync.HevyClient")
+@patch("hevy2garmin.sync.attempt_merge")
+@patch("hevy2garmin.reconcile.detect_duplicates")
+def test_sync_runs_duplicate_scan(mock_detect, mock_merge, mock_hevy_cls, mock_gclient, mock_db):
+    from hevy2garmin.merge import MergeResult
+    now = datetime.now(timezone.utc)
+    w = {"id": "w1", "title": "Push",
+         "start_time": (now - timedelta(hours=4)).isoformat(),
+         "end_time": (now - timedelta(hours=3)).isoformat(),
+         "updated_at": now.isoformat(), "exercises": []}
+    h = MagicMock(); h.get_workout_count.return_value = 1
+    h.get_workouts.return_value = {"workouts": [w], "page_count": 1}
+    mock_hevy_cls.return_value = h; mock_gclient.return_value = MagicMock()
+    mock_db.is_synced.return_value = False
+    mock_merge.return_value = MergeResult(merged=True, activity_id=99)
+    mock_detect.return_value = [{"workout_id": "w1", "tool_activity_id": 1, "watch_activity_id": 2}]
+    from hevy2garmin.sync import sync
+    stats = sync(config={"hevy_api_key": "t", "merge_mode": True,
+                         "sync": {"grace_period_minutes": 120}}, limit=1)
+    assert stats["duplicates"] == 1
+    mock_detect.assert_called_once()
