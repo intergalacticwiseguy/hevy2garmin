@@ -132,3 +132,18 @@ def get_cached_hr(hevy_id: str, **kw) -> dict | None:
 def cache_hr(hevy_id: str, data: dict, **kw) -> None:
     """Cache HR data for a workout."""
     return get_db().cache_hr(hevy_id, data)
+
+
+def get_stale_synced(workouts: list[dict], **kw) -> list[str]:
+    """Return hevy_ids of synced workouts edited on Hevy since sync."""
+    return get_db().get_stale_synced(workouts)
+
+
+def get_app_config(key: str, **kw) -> dict | None:
+    """Get a JSON value from the generic key-value app cache."""
+    return get_db().get_app_config(key)
+
+
+def set_app_config(key: str, value: dict, **kw) -> None:
+    """Store a JSON value in the generic key-value app cache."""
+    return get_db().set_app_config(key, value)
