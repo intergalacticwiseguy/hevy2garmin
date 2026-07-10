@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone, timedelta
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
-
-from hevy2garmin.sync import fetch_workouts, sync
+from hevy2garmin.merge import MergeResult
+from hevy2garmin.sync import fetch_workouts, sync, sync_one_workout
 
 
 def _iso(dt):
@@ -33,7 +31,6 @@ def test_grace_defers_too_new_workout(mock_merge, mock_hevy_cls, mock_gclient, m
     mock_hevy_cls.return_value = h
     mock_gclient.return_value = MagicMock()
     mock_db.is_synced.return_value = False
-    from hevy2garmin.sync import sync
     stats = sync(config={"hevy_api_key": "t", "merge_mode": True,
                          "sync": {"grace_period_minutes": 120}}, limit=1)
     assert stats["deferred"] == 1
@@ -47,7 +44,6 @@ def test_grace_defers_too_new_workout(mock_merge, mock_hevy_cls, mock_gclient, m
 @patch("hevy2garmin.sync.HevyClient")
 @patch("hevy2garmin.sync.attempt_merge")
 def test_grace_processes_old_enough_workout(mock_merge, mock_hevy_cls, mock_gclient, mock_db):
-    from hevy2garmin.merge import MergeResult
     now = datetime.now(timezone.utc)
     old = {"id": "w1", "title": "Push",
            "start_time": _iso(now - timedelta(hours=5)),
@@ -58,9 +54,9 @@ def test_grace_processes_old_enough_workout(mock_merge, mock_hevy_cls, mock_gcli
     mock_hevy_cls.return_value = h; mock_gclient.return_value = MagicMock()
     mock_db.is_synced.return_value = False
     mock_merge.return_value = MergeResult(merged=True, activity_id=99)
-    from hevy2garmin.sync import sync
-    stats = sync(config={"hevy_api_key": "t", "merge_mode": True,
-                         "sync": {"grace_period_minutes": 120}}, limit=1)
+    with patch("hevy2garmin.sync._estimate_fit_stats", return_value={"calories": 100, "avg_hr": 90}):
+        stats = sync(config={"hevy_api_key": "t", "merge_mode": True,
+                             "sync": {"grace_period_minutes": 120}}, limit=1)
     assert stats["deferred"] == 0
     assert stats["synced"] == 1
 
@@ -70,7 +66,6 @@ def test_grace_processes_old_enough_workout(mock_merge, mock_hevy_cls, mock_gcli
 @patch("hevy2garmin.sync.HevyClient")
 @patch("hevy2garmin.sync.attempt_merge")
 def test_manual_run_bypasses_grace(mock_merge, mock_hevy_cls, mock_gclient, mock_db):
-    from hevy2garmin.merge import MergeResult
     now = datetime.now(timezone.utc)
     fresh = {"id": "w1", "title": "Push",
              "start_time": _iso(now - timedelta(minutes=20)),
@@ -81,10 +76,10 @@ def test_manual_run_bypasses_grace(mock_merge, mock_hevy_cls, mock_gclient, mock
     mock_hevy_cls.return_value = h; mock_gclient.return_value = MagicMock()
     mock_db.is_synced.return_value = False
     mock_merge.return_value = MergeResult(merged=True, activity_id=99)
-    from hevy2garmin.sync import sync
-    stats = sync(config={"hevy_api_key": "t", "merge_mode": True,
-                         "sync": {"grace_period_minutes": 120}},
-                 limit=1, respect_grace=False)
+    with patch("hevy2garmin.sync._estimate_fit_stats", return_value={"calories": 100, "avg_hr": 90}):
+        stats = sync(config={"hevy_api_key": "t", "merge_mode": True,
+                             "sync": {"grace_period_minutes": 120}},
+                     limit=1, respect_grace=False)
     assert stats["deferred"] == 0
     assert stats["synced"] == 1
 
@@ -138,7 +133,7 @@ class TestSync:
             mock_hevy.get_workouts.return_value = {"workouts": [sample_workout], "page_count": 1}
             mock_db.is_synced.return_value = False
 
-            result = sync(dry_run=True, limit=1, hevy_api_key="test")
+            result = sync(dry_run=True, limit=1, hevy_api_key="test", respect_grace=False)
 
             mock_garmin.assert_not_called()
             assert result["synced"] == 1
@@ -152,7 +147,7 @@ class TestSync:
             mock_hevy.get_workouts.return_value = {"workouts": [sample_workout], "page_count": 1}
             mock_db.is_synced.return_value = True
 
-            result = sync(dry_run=True, limit=1, hevy_api_key="test")
+            result = sync(dry_run=True, limit=1, hevy_api_key="test", respect_grace=False)
             assert result["skipped"] == 1
             assert result["synced"] == 0
 
@@ -165,7 +160,7 @@ class TestSync:
             mock_hevy.get_workouts.return_value = {"workouts": [sample_workout_unmapped], "page_count": 1}
             mock_db.is_synced.return_value = False
 
-            result = sync(dry_run=True, limit=1, hevy_api_key="test")
+            result = sync(dry_run=True, limit=1, hevy_api_key="test", respect_grace=False)
             assert "Invented Exercise 99" in result["unmapped"]
 
     def test_handles_fit_generation_failure(self) -> None:
@@ -184,7 +179,7 @@ class TestSync:
             mock_hevy.get_workouts.return_value = {"workouts": [bad_workout], "page_count": 1}
             mock_db.is_synced.return_value = False
 
-            result = sync(dry_run=True, limit=1, hevy_api_key="test")
+            result = sync(dry_run=True, limit=1, hevy_api_key="test", respect_grace=False)
             assert result["failed"] == 1
 
     def test_records_to_db_after_success(self, sample_workout: dict) -> None:
@@ -193,16 +188,155 @@ class TestSync:
              patch("hevy2garmin.sync.get_client") as mock_garmin_client, \
              patch("hevy2garmin.sync.upload_fit") as mock_upload, \
              patch("hevy2garmin.sync.rename_activity"), \
-             patch("hevy2garmin.sync.set_description"):
+             patch("hevy2garmin.sync.set_description"), \
+             patch("hevy2garmin.hr.hr_for_sync", return_value=None):
             mock_hevy = MockHevy.return_value
             mock_hevy.get_workout_count.return_value = 1
             mock_hevy.get_workouts.return_value = {"workouts": [sample_workout], "page_count": 1}
             mock_db.is_synced.return_value = False
             mock_upload.return_value = {"upload_id": "123", "activity_id": 456}
 
-            result = sync(limit=1, hevy_api_key="test", garmin_email="e", garmin_password="p")
+            result = sync(
+                limit=1,
+                hevy_api_key="test",
+                garmin_email="e",
+                garmin_password="p",
+                respect_grace=False,
+            )
             mock_db.mark_synced.assert_called_once()
             assert result["synced"] == 1
+
+    def test_record_log_disabled(self, sample_workout: dict) -> None:
+        with patch("hevy2garmin.sync.HevyClient") as MockHevy, \
+             patch("hevy2garmin.sync.db") as mock_db, \
+             patch("hevy2garmin.sync.get_client"), \
+             patch("hevy2garmin.sync.sync_one_workout") as mock_one:
+            mock_hevy = MockHevy.return_value
+            mock_hevy.get_workout_count.return_value = 1
+            mock_hevy.get_workouts.return_value = {"workouts": [sample_workout], "page_count": 1}
+            mock_db.is_synced.return_value = False
+            from hevy2garmin.sync import SyncOneResult
+            mock_one.return_value = SyncOneResult(status="synced")
+
+            sync(limit=1, hevy_api_key="test", record_log=False)
+
+            mock_db.record_sync_log.assert_not_called()
+
+    def test_record_log_enabled(self, sample_workout: dict) -> None:
+        with patch("hevy2garmin.sync.HevyClient") as MockHevy, \
+             patch("hevy2garmin.sync.db") as mock_db, \
+             patch("hevy2garmin.sync.get_client"), \
+             patch("hevy2garmin.sync.sync_one_workout") as mock_one:
+            mock_hevy = MockHevy.return_value
+            mock_hevy.get_workout_count.return_value = 1
+            mock_hevy.get_workouts.return_value = {"workouts": [sample_workout], "page_count": 1}
+            mock_db.is_synced.return_value = False
+            from hevy2garmin.sync import SyncOneResult
+            mock_one.return_value = SyncOneResult(status="synced")
+
+            sync(limit=1, hevy_api_key="test", log_trigger="manual")
+
+            mock_db.record_sync_log.assert_called_once_with(
+                synced=1, skipped=0, failed=0, trigger="manual",
+            )
+
+
+class TestSyncOneWorkout:
+    def test_merge_success_stores_calories(self, sample_workout: dict) -> None:
+        with patch("hevy2garmin.sync.db") as mock_db, \
+             patch("hevy2garmin.sync.attempt_merge") as mock_merge, \
+             patch("hevy2garmin.sync._estimate_fit_stats", return_value={"calories": 250, "avg_hr": 120}):
+            mock_merge.return_value = MergeResult(merged=True, activity_id=999)
+            garmin = MagicMock()
+
+            result = sync_one_workout(
+                sample_workout,
+                cfg={"merge_mode": True},
+                garmin_client=garmin,
+            )
+
+            assert result.merged is True
+            assert result.calories == 250
+            mock_db.mark_synced.assert_called_once_with(
+                hevy_id=sample_workout["id"],
+                garmin_activity_id="999",
+                title=sample_workout["title"],
+                calories=250,
+                avg_hr=120,
+                hevy_updated_at=sample_workout.get("updated_at"),
+                sync_method="merge",
+            )
+
+    def test_description_disabled_skips_set_description(self, sample_workout: dict) -> None:
+        with patch("hevy2garmin.sync.db") as mock_db, \
+             patch("hevy2garmin.sync.attempt_merge", return_value=MergeResult(merged=False, fallback_reason="No match")), \
+             patch("hevy2garmin.hr.hr_for_sync", return_value=None), \
+             patch("hevy2garmin.sync.generate_fit", return_value={"exercises": 2, "total_sets": 5, "calories": 100, "avg_hr": 90}), \
+             patch("hevy2garmin.sync.find_activity_by_start_time", return_value=None), \
+             patch("hevy2garmin.sync.upload_fit", return_value={"activity_id": 456}), \
+             patch("hevy2garmin.sync.rename_activity"), \
+             patch("hevy2garmin.sync.set_description") as mock_set_desc, \
+             patch("hevy2garmin.sync.generate_description", return_value="desc"):
+            garmin = MagicMock()
+            cfg = {"merge_mode": False, "description_enabled": False}
+
+            sync_one_workout(sample_workout, cfg=cfg, garmin_client=garmin)
+
+            mock_set_desc.assert_not_called()
+            mock_db.mark_synced.assert_called_once()
+
+    def test_single_upload_attempts_merge(self, sample_workout: dict) -> None:
+        with patch("hevy2garmin.sync.db"), \
+             patch("hevy2garmin.sync.attempt_merge") as mock_merge, \
+             patch("hevy2garmin.sync._estimate_fit_stats", return_value={"calories": 100, "avg_hr": 90}):
+            mock_merge.return_value = MergeResult(merged=True, activity_id=777)
+            garmin = MagicMock()
+
+            result = sync_one_workout(
+                sample_workout,
+                cfg={"merge_mode": True},
+                garmin_client=garmin,
+            )
+
+            mock_merge.assert_called_once()
+            assert result.merged is True
+
+    def test_respect_grace_defers_fresh_workout(self, sample_workout: dict) -> None:
+        now = datetime.now(timezone.utc)
+        fresh = {
+            **sample_workout,
+            "start_time": (now - timedelta(minutes=30)).isoformat(),
+            "end_time": (now - timedelta(minutes=10)).isoformat(),
+        }
+        with patch("hevy2garmin.sync.attempt_merge") as mock_merge:
+            result = sync_one_workout(
+                fresh,
+                cfg={"merge_mode": True, "sync": {"grace_period_minutes": 120}},
+                garmin_client=MagicMock(),
+                respect_grace=True,
+            )
+            assert result.status == "deferred"
+            mock_merge.assert_not_called()
+
+    def test_respect_grace_false_bypasses(self, sample_workout: dict) -> None:
+        now = datetime.now(timezone.utc)
+        fresh = {
+            **sample_workout,
+            "start_time": (now - timedelta(minutes=20)).isoformat(),
+            "end_time": (now - timedelta(minutes=5)).isoformat(),
+        }
+        with patch("hevy2garmin.sync.db"), \
+             patch("hevy2garmin.sync.attempt_merge") as mock_merge, \
+             patch("hevy2garmin.sync._estimate_fit_stats", return_value={"calories": 100, "avg_hr": 90}):
+            mock_merge.return_value = MergeResult(merged=True, activity_id=777)
+            result = sync_one_workout(
+                fresh,
+                cfg={"merge_mode": True, "sync": {"grace_period_minutes": 120}},
+                garmin_client=MagicMock(),
+                respect_grace=False,
+            )
+            assert result.status == "synced"
+            assert result.merged is True
 
 
 @patch("hevy2garmin.sync.db")
@@ -217,7 +351,6 @@ class TestSync:
 @patch("hevy2garmin.sync.generate_description", return_value="d")
 @patch("hevy2garmin.hr.hr_for_sync")
 def test_hr_empty_retries_once_then_counts_no_hr(mock_hr, *rest):
-    from hevy2garmin.merge import MergeResult
     (mock_desc, mock_setdesc, mock_rename, mock_find, mock_upload,
      mock_fit, mock_merge, mock_hevy_cls, mock_gclient, mock_db) = rest
     mock_hr.return_value = None
@@ -231,7 +364,6 @@ def test_hr_empty_retries_once_then_counts_no_hr(mock_hr, *rest):
     mock_hevy_cls.return_value = h; mock_gclient.return_value = MagicMock()
     mock_db.is_synced.return_value = False
     mock_merge.return_value = MergeResult(merged=False, force_fresh_upload=True, fallback_reason="no match")
-    from hevy2garmin.sync import sync
     stats = sync(config={"hevy_api_key": "t", "merge_mode": True,
                          "sync": {"grace_period_minutes": 120},
                          "hr_fusion": {"enabled": True}}, limit=1)
@@ -251,7 +383,6 @@ def test_hr_empty_retries_once_then_counts_no_hr(mock_hr, *rest):
 @patch("hevy2garmin.sync.generate_description", return_value="d")
 @patch("hevy2garmin.hr.hr_for_sync")
 def test_hr_fusion_disabled_no_retry_no_count(mock_hr, *rest):
-    from hevy2garmin.merge import MergeResult
     (mock_desc, mock_setdesc, mock_rename, mock_find, mock_upload,
      mock_fit, mock_merge, mock_hevy_cls, mock_gclient, mock_db) = rest
     now = datetime.now(timezone.utc)
@@ -264,7 +395,6 @@ def test_hr_fusion_disabled_no_retry_no_count(mock_hr, *rest):
     mock_hevy_cls.return_value = h; mock_gclient.return_value = MagicMock()
     mock_db.is_synced.return_value = False
     mock_merge.return_value = MergeResult(merged=False, force_fresh_upload=True, fallback_reason="no match")
-    from hevy2garmin.sync import sync
     stats = sync(config={"hevy_api_key": "t", "merge_mode": True,
                          "sync": {"grace_period_minutes": 120},
                          "hr_fusion": {"enabled": False}}, limit=1)
@@ -286,7 +416,6 @@ def test_hr_fusion_disabled_no_retry_no_count(mock_hr, *rest):
 def test_no_hr_not_counted_on_dedup_path(mock_hr, *rest):
     """When the activity already exists on Garmin (dedup, no upload), no_hr must
     NOT fire — nothing was uploaded, and the existing activity may have its own HR."""
-    from hevy2garmin.merge import MergeResult
     (mock_desc, mock_setdesc, mock_rename, mock_find, mock_upload,
      mock_fit, mock_merge, mock_hevy_cls, mock_gclient, mock_db) = rest
     mock_hr.return_value = None
@@ -300,7 +429,6 @@ def test_no_hr_not_counted_on_dedup_path(mock_hr, *rest):
     mock_hevy_cls.return_value = h; mock_gclient.return_value = MagicMock()
     mock_db.is_synced.return_value = False
     mock_merge.return_value = MergeResult(merged=False, force_fresh_upload=False, fallback_reason="no match")
-    from hevy2garmin.sync import sync
     stats = sync(config={"hevy_api_key": "t", "merge_mode": True,
                          "sync": {"grace_period_minutes": 120},
                          "hr_fusion": {"enabled": True}}, limit=1)
@@ -315,7 +443,6 @@ def test_no_hr_not_counted_on_dedup_path(mock_hr, *rest):
 @patch("hevy2garmin.sync.attempt_merge")
 @patch("hevy2garmin.reconcile.detect_duplicates")
 def test_sync_runs_duplicate_scan(mock_detect, mock_merge, mock_hevy_cls, mock_gclient, mock_db):
-    from hevy2garmin.merge import MergeResult
     now = datetime.now(timezone.utc)
     w = {"id": "w1", "title": "Push",
          "start_time": (now - timedelta(hours=4)).isoformat(),
@@ -327,8 +454,8 @@ def test_sync_runs_duplicate_scan(mock_detect, mock_merge, mock_hevy_cls, mock_g
     mock_db.is_synced.return_value = False
     mock_merge.return_value = MergeResult(merged=True, activity_id=99)
     mock_detect.return_value = [{"workout_id": "w1", "tool_activity_id": 1, "watch_activity_id": 2}]
-    from hevy2garmin.sync import sync
-    stats = sync(config={"hevy_api_key": "t", "merge_mode": True,
-                         "sync": {"grace_period_minutes": 120}}, limit=1)
+    with patch("hevy2garmin.sync._estimate_fit_stats", return_value={"calories": 100, "avg_hr": 90}):
+        stats = sync(config={"hevy_api_key": "t", "merge_mode": True,
+                             "sync": {"grace_period_minutes": 120}}, limit=1)
     assert stats["duplicates"] == 1
     mock_detect.assert_called_once()
