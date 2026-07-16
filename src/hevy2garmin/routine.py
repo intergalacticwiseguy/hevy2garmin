@@ -32,9 +32,10 @@ logger = logging.getLogger("hevy2garmin")
 # --- Garmin workout-service enums (validated against a real export 2026-07-16) #
 SPORT_TYPE_STRENGTH = {"sportTypeId": 5, "sportTypeKey": "strength_training"}
 
-# stepType: warmup sets vs. working sets.
+# stepType: warmup sets vs. working sets vs. rest between sets.
 _STEP_TYPE_WARMUP = {"stepTypeId": 1, "stepTypeKey": "warmup"}
 _STEP_TYPE_INTERVAL = {"stepTypeId": 3, "stepTypeKey": "interval"}
+_STEP_TYPE_REST = {"stepTypeId": 5, "stepTypeKey": "rest"}
 
 # endCondition: how a step ends.
 _END_REPS = {"conditionTypeId": 10, "conditionTypeKey": "reps"}
@@ -96,12 +97,33 @@ def _build_step(
     return step
 
 
-def routine_to_garmin_workout(routine: dict, *, weight_unit: str = "kilogram") -> dict:
+def _rest_step(order: int, rest_seconds: int) -> dict:
+    """Build a timed rest step (stepType ``rest``, ends after ``rest_seconds``)."""
+    return {
+        "type": "ExecutableStepDTO",
+        "stepOrder": order,
+        "stepType": _STEP_TYPE_REST,
+        "endCondition": _END_TIME,
+        "endConditionValue": float(rest_seconds),
+    }
+
+
+def routine_to_garmin_workout(
+    routine: dict,
+    *,
+    weight_unit: str = "kilogram",
+    default_rest_seconds: int | None = None,
+) -> dict:
     """Convert a Hevy routine into a Garmin ``/workout-service/workout`` body.
 
     ``weight_unit`` is ``"kilogram"`` (default) or ``"pound"``; Hevy always
     stores ``weight_kg`` so pounds are converted. Exercises that don't map to a
     known FIT category become generic named steps (logged via ``UNKNOWN`` count).
+
+    A timed ``rest`` step is inserted *between* consecutive sets of an exercise
+    (never after its last set). The duration is the exercise's Hevy
+    ``rest_seconds``; when Hevy omits it, ``default_rest_seconds`` is used, and
+    if that is also falsy no rest steps are added.
     """
     exercises = routine.get("exercises") or []
     steps: list[dict] = []
@@ -114,11 +136,21 @@ def routine_to_garmin_workout(routine: dict, *, weight_unit: str = "kilogram") -
         category_str, exercise_name_str = fit_exercise_strings(category, subcategory)
         if category_str is None:
             unknown += 1
-        for set_data in exercise.get("sets") or []:
+
+        rest_seconds = exercise.get("rest_seconds")
+        if rest_seconds is None:
+            rest_seconds = default_rest_seconds
+
+        sets = exercise.get("sets") or []
+        for i, set_data in enumerate(sets):
             steps.append(
                 _build_step(order, set_data, title, category_str, exercise_name_str, weight_unit)
             )
             order += 1
+            # Rest goes between sets of the same exercise, not after the last one.
+            if rest_seconds and i < len(sets) - 1:
+                steps.append(_rest_step(order, rest_seconds))
+                order += 1
 
     name = routine.get("title") or routine.get("name") or "Hevy Routine"
     if unknown:

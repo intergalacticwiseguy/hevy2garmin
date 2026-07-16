@@ -104,6 +104,71 @@ class TestRoutineToGarminWorkout:
         payload = routine_to_garmin_workout({"title": "Empty", "exercises": []})
         assert payload["workoutSegments"][0]["workoutSteps"] == []
 
+    def test_no_rest_by_default(self) -> None:
+        # _routine() has no rest_seconds and no default → no rest steps.
+        steps = routine_to_garmin_workout(self._routine())["workoutSegments"][0]["workoutSteps"]
+        assert all(s["stepType"]["stepTypeKey"] != "rest" for s in steps)
+
+
+class TestRestSteps:
+    def _routine(self, rest=None) -> dict:
+        ex: dict = {"title": "Bench Press (Barbell)", "sets": [
+            {"type": "normal", "reps": 8, "weight_kg": 60},
+            {"type": "normal", "reps": 8, "weight_kg": 60},
+            {"type": "normal", "reps": 8, "weight_kg": 60},
+        ]}
+        if rest is not None:
+            ex["rest_seconds"] = rest
+        return {"title": "Push", "exercises": [ex]}
+
+    def test_rest_between_sets_from_hevy(self) -> None:
+        steps = routine_to_garmin_workout(self._routine(rest=90))["workoutSegments"][0]["workoutSteps"]
+        # 3 sets + 2 rests between them.
+        assert [s["stepType"]["stepTypeKey"] for s in steps] == [
+            "interval", "rest", "interval", "rest", "interval"]
+        assert [s["stepOrder"] for s in steps] == [1, 2, 3, 4, 5]
+
+    def test_rest_step_shape(self) -> None:
+        steps = routine_to_garmin_workout(self._routine(rest=90))["workoutSegments"][0]["workoutSteps"]
+        rest = steps[1]
+        assert rest["stepType"] == {"stepTypeId": 5, "stepTypeKey": "rest"}
+        assert rest["endCondition"]["conditionTypeKey"] == "time"
+        assert rest["endConditionValue"] == 90.0
+        assert "category" not in rest and "weightValue" not in rest
+
+    def test_no_rest_after_last_set(self) -> None:
+        steps = routine_to_garmin_workout(self._routine(rest=90))["workoutSegments"][0]["workoutSteps"]
+        assert steps[-1]["stepType"]["stepTypeKey"] == "interval"
+
+    def test_hevy_rest_overrides_default(self) -> None:
+        steps = routine_to_garmin_workout(
+            self._routine(rest=30), default_rest_seconds=120
+        )["workoutSegments"][0]["workoutSteps"]
+        assert steps[1]["endConditionValue"] == 30.0
+
+    def test_default_used_when_hevy_omits(self) -> None:
+        steps = routine_to_garmin_workout(
+            self._routine(), default_rest_seconds=75
+        )["workoutSegments"][0]["workoutSteps"]
+        rests = [s for s in steps if s["stepType"]["stepTypeKey"] == "rest"]
+        assert len(rests) == 2
+        assert all(s["endConditionValue"] == 75.0 for s in rests)
+
+    def test_zero_rest_adds_no_steps(self) -> None:
+        steps = routine_to_garmin_workout(self._routine(rest=0))["workoutSegments"][0]["workoutSteps"]
+        assert all(s["stepType"]["stepTypeKey"] != "rest" for s in steps)
+
+    def test_rest_not_added_across_exercises(self) -> None:
+        routine = {"title": "Full", "exercises": [
+            {"title": "Bench Press (Barbell)", "rest_seconds": 60,
+             "sets": [{"type": "normal", "reps": 5, "weight_kg": 60}]},
+            {"title": "Bench Press (Barbell)", "rest_seconds": 60,
+             "sets": [{"type": "normal", "reps": 5, "weight_kg": 60}]},
+        ]}
+        steps = routine_to_garmin_workout(routine)["workoutSegments"][0]["workoutSteps"]
+        # One set each, so no intra-exercise rest and none between exercises.
+        assert [s["stepType"]["stepTypeKey"] for s in steps] == ["interval", "interval"]
+
 
 class TestGarminWorkoutOps:
     def test_create_workout_posts_and_returns_id(self) -> None:

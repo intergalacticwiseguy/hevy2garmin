@@ -737,6 +737,9 @@ def sync_routines(
     garmin_password = overrides.get("garmin_password") or cfg.get("garmin_password", "")
     garmin_token_dir = cfg.get("garmin_token_dir", "~/.garminconnect")
     weight_unit = cfg.get("sync", {}).get("weight_unit", "kilogram")
+    # Fallback rest between sets when a Hevy routine doesn't specify one, mirroring
+    # the FIT timing default used for logged workouts.
+    default_rest_seconds = cfg.get("timing", {}).get("rest_between_sets_seconds", 75)
 
     hevy = HevyClient(api_key=hevy_api_key)
     routines = fetch_all_routines(hevy)
@@ -768,7 +771,9 @@ def sync_routines(
             continue
 
         try:
-            payload = routine_to_garmin_workout(routine, weight_unit=weight_unit)
+            payload = routine_to_garmin_workout(
+                routine, weight_unit=weight_unit, default_rest_seconds=default_rest_seconds
+            )
             if dry_run:
                 logger.info(
                     "[dry-run] Would create Garmin workout '%s' with %d step(s)",
