@@ -8,10 +8,17 @@ library — not to an uploaded activity. This module converts a routine dict fro
 
 The payload shape is reverse-engineered (Garmin does not publish this API). The
 numeric IDs below (``sportType``, ``stepType``, ``endCondition``, ``weightUnit``)
-should be confirmed against a real strength workout exported from Garmin Connect
-before relying on them in production — see the plan's "spike" step. The exercise
+were **validated on 2026-07-16** by diffing a workout created by this builder
+against a strength workout hand-authored in Garmin Connect (via
+``client.get_workout_by_id``): Garmin accepted and stored every field verbatim,
+and ``weightValue`` is in **kilograms** (not grams). Garmin fills in
+``weightUnit.factor`` and ``targetType`` itself, so we omit them. The exercise
 ``category``/``exerciseName`` strings come from :func:`mapper.fit_exercise_strings`,
 which derives them from the FIT SDK enums fit-tool ships.
+
+Note: Garmin's own UI collapses identical consecutive sets into a
+``RepeatGroupDTO`` with a rest step; this builder emits one flat ``interval``
+step per set instead, which is equally valid and preserves per-set weights.
 """
 
 from __future__ import annotations
@@ -22,7 +29,7 @@ from hevy2garmin.mapper import fit_exercise_strings, lookup_exercise
 
 logger = logging.getLogger("hevy2garmin")
 
-# --- Reverse-engineered Garmin workout-service enums (confirm via spike) ----- #
+# --- Garmin workout-service enums (validated against a real export 2026-07-16) #
 SPORT_TYPE_STRENGTH = {"sportTypeId": 5, "sportTypeKey": "strength_training"}
 
 # stepType: warmup sets vs. working sets.
