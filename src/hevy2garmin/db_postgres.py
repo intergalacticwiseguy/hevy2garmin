@@ -229,6 +229,25 @@ class PostgresDatabase(Database):
             conn.commit()
             return deleted
 
+    def get_routine_stats(self) -> dict:
+        with self._get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT COUNT(*) AS synced, COUNT(scheduled_date) AS scheduled FROM synced_routines"
+                )
+                row = cur.fetchone()
+                return {"synced": row["synced"] or 0, "scheduled": row["scheduled"] or 0}
+
+    def get_recent_synced_routines(self, limit: int = 5) -> list[dict]:
+        with self._get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT hevy_routine_id, title, scheduled_date, garmin_workout_id, synced_at "
+                    "FROM synced_routines ORDER BY synced_at DESC LIMIT %s",
+                    (limit,),
+                )
+                return [dict(r) for r in cur.fetchall()]
+
     def mark_synced(
         self,
         hevy_id: str,

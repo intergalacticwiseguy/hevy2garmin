@@ -157,3 +157,11 @@ class Database(ABC):
     @abstractmethod
     def delete_synced_routine(self, hevy_routine_id: str) -> bool:
         """Remove a routine sync record. Returns True if a record was deleted."""
+
+    @abstractmethod
+    def get_routine_stats(self) -> dict:
+        """Return routine sync counts: ``{"synced": int, "scheduled": int}``."""
+
+    @abstractmethod
+    def get_recent_synced_routines(self, limit: int = 5) -> list[dict]:
+        """Return recently synced routines, newest first."""

@@ -750,6 +750,11 @@ def sync_routines(
     hevy = HevyClient(api_key=hevy_api_key)
     routines = fetch_all_routines(hevy)
     logger.info("Fetched %d routines to process", len(routines))
+    # Cache the total so the dashboard can show "pending" without a Hevy call.
+    try:
+        store.set_app_config("routines_total", {"count": len(routines)})
+    except Exception:
+        logger.debug("Could not cache routines_total", exc_info=True)
 
     garmin_client = None
     if not dry_run:

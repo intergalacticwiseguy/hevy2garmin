@@ -223,6 +223,25 @@ class SQLiteDatabase(Database):
         conn.close()
         return deleted
 
+    def get_routine_stats(self) -> dict:
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT COUNT(*), COUNT(scheduled_date) FROM synced_routines"
+        ).fetchone()
+        conn.close()
+        return {"synced": row[0] or 0, "scheduled": row[1] or 0}
+
+    def get_recent_synced_routines(self, limit: int = 5) -> list[dict]:
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT hevy_routine_id, title, scheduled_date, garmin_workout_id, synced_at "
+            "FROM synced_routines ORDER BY synced_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        conn.close()
+        keys = ("hevy_routine_id", "title", "scheduled_date", "garmin_workout_id", "synced_at")
+        return [dict(zip(keys, r)) for r in rows]
+
     def mark_synced(
         self,
         hevy_id: str,

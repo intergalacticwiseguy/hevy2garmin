@@ -473,8 +473,25 @@ async def dashboard(request: Request):
     except Exception:
         pass
 
+    # Routine summary — all DB-backed (no Hevy call). "pending" needs the total
+    # routine count, cached by the /routines page and by routine sync.
+    routine_stats = {"synced": 0, "scheduled": 0}
+    recent_routines: list = []
+    routines_pending = None
+    try:
+        routine_stats = db.get_routine_stats()
+        recent_routines = db.get_recent_synced_routines(5)
+        cached_total = db.get_app_config("routines_total")
+        if isinstance(cached_total, dict) and isinstance(cached_total.get("count"), int):
+            routines_pending = max(0, cached_total["count"] - routine_stats["synced"])
+    except Exception:
+        pass
+
     return _render(
         "dashboard.html",
+        routine_stats=routine_stats,
+        recent_routines=recent_routines,
+        routines_pending=routines_pending,
         synced_count=synced_count,
         matched_count=matched_count,
         terminal_count=terminal_count,
@@ -1305,7 +1322,13 @@ async def routines_page(request: Request):
 
         _db = db.get_db()
         hevy = HevyClient(api_key=config.get("hevy_api_key"))
-        for r in fetch_all_routines(hevy):
+        all_routines = fetch_all_routines(hevy)
+        # Cache the total so the dashboard can show "pending" without a Hevy call.
+        try:
+            _db.set_app_config("routines_total", {"count": len(all_routines)})
+        except Exception:
+            pass
+        for r in all_routines:
             record = _db.get_synced_routine(r.get("id", ""))
             routines.append({
                 "id": r.get("id", ""),
