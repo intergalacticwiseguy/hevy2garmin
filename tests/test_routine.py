@@ -12,7 +12,11 @@ from hevy2garmin.sync import routine_schedule_dates
 from hevy2garmin.db_sqlite import SQLiteDatabase
 from hevy2garmin.garmin import create_workout, delete_workout, schedule_workout
 from hevy2garmin.mapper import fit_exercise_strings
-from hevy2garmin.routine import routine_to_garmin_workout, workout_content_hash
+from hevy2garmin.routine import (
+    ROUTINE_DESC_MARKER,
+    routine_to_garmin_workout,
+    workout_content_hash,
+)
 
 
 class TestFitExerciseStrings:
@@ -53,9 +57,20 @@ class TestRoutineToGarminWorkout:
     def test_top_level_shape(self) -> None:
         payload = routine_to_garmin_workout(self._routine())
         assert payload["workoutName"] == "Push Day"
-        assert payload["description"] == "chest/shoulders"
+        # The routine notes lead the description, with the provenance marker appended so
+        # reconciliation can tell our workouts apart from the user's hand-built ones.
+        assert payload["description"].startswith("chest/shoulders")
+        assert ROUTINE_DESC_MARKER in payload["description"]
         assert payload["sportType"]["sportTypeKey"] == "strength_training"
         assert len(payload["workoutSegments"]) == 1
+
+    def test_description_marker_survives_long_notes(self) -> None:
+        # Notes near the 1024 cap must not truncate the marker off the end — detection
+        # relies on it being present intact.
+        routine = {"id": "r1", "title": "Push", "notes": "x" * 2000, "exercises": []}
+        payload = routine_to_garmin_workout(routine)
+        assert len(payload["description"]) <= 1024
+        assert payload["description"].endswith(ROUTINE_DESC_MARKER)
 
     def test_steps_and_order(self) -> None:
         steps = routine_to_garmin_workout(self._routine())["workoutSegments"][0]["workoutSteps"]
@@ -369,14 +384,15 @@ class TestSyncRoutines:
         assert final["status"] == "success"
         assert final["scheduled_date"] == "2026-08-01"
 
-    def test_reconciles_orphan_from_garmin_library(self, tmp_path: Path) -> None:
+    def test_reconciles_marked_orphan_from_garmin_library(self, tmp_path: Path) -> None:
         # #3: the DB has no record (it was reset while the Garmin workout survived, or a
         # prior run crashed after create but before persisting), yet a same-named workout
-        # still lives in the Garmin library. Reconciliation must find it by name and
-        # delete it before recreating, so the routine isn't duplicated on Garmin.
+        # *carrying our provenance marker* still lives in the Garmin library. Reconciliation
+        # must recognise it as ours, delete it before recreating, and not duplicate it.
         routines = [{"id": "r1", "title": "Push", "updated_at": "2026-01-01T00:00:00Z", "exercises": []}]
         store, create_mock, _, patches = self._patched(tmp_path, routines)
-        list_mock = MagicMock(return_value=[{"workoutId": 777, "workoutName": "Push"}])
+        list_mock = MagicMock(return_value=[
+            {"workoutId": 777, "workoutName": "Push", "description": f"notes\n{ROUTINE_DESC_MARKER}"}])
         delete_mock = MagicMock()
         with patches[0], patches[1], patches[2], patches[3], patches[4], \
                 patch.object(sync_module, "delete_workout", delete_mock), patches[6], \
@@ -388,6 +404,24 @@ class TestSyncRoutines:
         delete_mock.assert_called_once_with(delete_mock.call_args[0][0], "777")
         create_mock.assert_called_once()
         assert store.get_synced_routine("r1")["garmin_workout_id"] == "777"
+
+    def test_does_not_delete_unmarked_same_named_workout(self, tmp_path: Path) -> None:
+        # Core safety guarantee (review item #2): a same-named workout WITHOUT our marker is
+        # one the user hand-built in Garmin. With no DB record for it, reconciliation must
+        # NOT delete it — it creates a fresh copy instead (a possible duplicate is acceptable;
+        # destroying the user's workout is not).
+        routines = [{"id": "r1", "title": "Push", "updated_at": "2026-01-01T00:00:00Z", "exercises": []}]
+        store, create_mock, _, patches = self._patched(tmp_path, routines)
+        list_mock = MagicMock(return_value=[
+            {"workoutId": 777, "workoutName": "Push", "description": "my own leg day"}])
+        delete_mock = MagicMock()
+        with patches[0], patches[1], patches[2], patches[3], patches[4], \
+                patch.object(sync_module, "delete_workout", delete_mock), patches[6], \
+                patch.object(sync_module, "list_workouts", list_mock):
+            result = sync_module.sync_routines()
+        assert result["created"] == 1
+        delete_mock.assert_not_called()
+        create_mock.assert_called_once()
 
     def test_reconciliation_is_best_effort_when_listing_fails(self, tmp_path: Path) -> None:
         # If listing the Garmin library errors, sync must still proceed on DB-only dedup
@@ -410,7 +444,8 @@ class TestSyncRoutines:
         routines = [{"id": "r1", "title": "Push", "updated_at": "2026-01-01T00:00:00Z", "exercises": []}]
         store, create_mock, _, patches = self._patched(tmp_path, routines)
         store.mark_routine_synced("r1", garmin_workout_id="555", content_hash="stale-hash")
-        list_mock = MagicMock(return_value=[{"workoutId": 555, "workoutName": "Push"}])
+        list_mock = MagicMock(return_value=[
+            {"workoutId": 555, "workoutName": "Push", "description": f"x\n{ROUTINE_DESC_MARKER}"}])
         delete_mock = MagicMock()
         with patches[0], patches[1], patches[2], patches[3], patches[4], \
                 patch.object(sync_module, "delete_workout", delete_mock), patches[6], \
