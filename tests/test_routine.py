@@ -213,6 +213,11 @@ class TestSyncRoutines:
         hevy.get_routines.return_value = {"routines": routines, "page_count": 1}
         create_mock = MagicMock(return_value=777)
         schedule_mock = MagicMock()
+        # patches[7] stubs list_workouts (the pre-create library reconciliation). It
+        # returns an empty library by default — no orphans — so it's a no-op for tests
+        # that don't exercise reconciliation, and it keeps the real list_workouts (with
+        # its 1s rate-limit sleep) out of every sync test. Tests that need orphans swap
+        # in their own list mock, the same way delete_workout (patches[5]) is overridden.
         patches = [
             patch.object(sync_module, "load_config", return_value={
                 "hevy_api_key": "k", "garmin_email": "e", "garmin_password": "p"}),
@@ -222,6 +227,7 @@ class TestSyncRoutines:
             patch.object(sync_module, "create_workout", create_mock),
             patch.object(sync_module, "delete_workout", MagicMock()),
             patch.object(sync_module, "schedule_workout", schedule_mock),
+            patch.object(sync_module, "list_workouts", MagicMock(return_value=[])),
         ]
         return store, create_mock, schedule_mock, patches
 
@@ -230,7 +236,7 @@ class TestSyncRoutines:
                      "exercises": [{"title": "Bench Press (Barbell)",
                                     "sets": [{"type": "normal", "reps": 5, "weight_kg": 60}]}]}]
         store, create_mock, _, patches = self._patched(tmp_path, routines)
-        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7]:
             result = sync_module.sync_routines()
         assert result == {"created": 1, "updated": 0, "skipped": 0, "failed": 0,
                           "scheduled": 0, "total": 1}
@@ -247,7 +253,7 @@ class TestSyncRoutines:
         store, create_mock, _, patches = self._patched(tmp_path, routines)
         store.mark_routine_synced("r1", garmin_workout_id="777",
                                   content_hash=self._hash_for(routines[0]))
-        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7]:
             result = sync_module.sync_routines()
         assert result["skipped"] == 1
         assert result["created"] == 0
@@ -260,7 +266,7 @@ class TestSyncRoutines:
         # Stored under a stale hash → payload differs → recreate.
         store.mark_routine_synced("r1", garmin_workout_id="555", content_hash="stale-hash")
         with patches[0], patches[1], patches[2], patches[3], patches[4], \
-                patch.object(sync_module, "delete_workout", delete_mock), patches[6]:
+                patch.object(sync_module, "delete_workout", delete_mock), patches[6], patches[7]:
             result = sync_module.sync_routines()
         assert result["updated"] == 1
         assert result["created"] == 0
@@ -272,7 +278,7 @@ class TestSyncRoutines:
     def test_schedule_when_date_given(self, tmp_path: Path) -> None:
         routines = [{"id": "r1", "title": "Push", "updated_at": "2026-01-01T00:00:00Z", "exercises": []}]
         store, _, schedule_mock, patches = self._patched(tmp_path, routines)
-        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7]:
             result = sync_module.sync_routines(schedule_date="2026-08-01")
         assert result["scheduled"] == 1
         assert schedule_mock.call_count == 1
@@ -288,7 +294,7 @@ class TestSyncRoutines:
                                   hevy_updated_at="2026-01-01T00:00:00Z")
         delete_mock = MagicMock()
         with patches[0], patches[1], patches[2], patches[3], patches[4], \
-                patch.object(sync_module, "delete_workout", delete_mock), patches[6]:
+                patch.object(sync_module, "delete_workout", delete_mock), patches[6], patches[7]:
             result = sync_module.sync_routines(force=True)
         # Forcing a routine that was already synced counts as an update.
         assert result["updated"] == 1
@@ -301,7 +307,7 @@ class TestSyncRoutines:
     def test_dry_run_does_not_call_garmin(self, tmp_path: Path) -> None:
         routines = [{"id": "r1", "title": "Push", "updated_at": "2026-01-01T00:00:00Z", "exercises": []}]
         store, create_mock, _, patches = self._patched(tmp_path, routines)
-        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7]:
             result = sync_module.sync_routines(dry_run=True)
         assert result["created"] == 1
         create_mock.assert_not_called()
@@ -317,7 +323,7 @@ class TestSyncRoutines:
                                   scheduled_date="2026-08-01", content_hash="stale-hash")
         delete_mock = MagicMock()
         with patches[0], patches[1], patches[2], patches[3], patches[4], \
-                patch.object(sync_module, "delete_workout", delete_mock), patches[6]:
+                patch.object(sync_module, "delete_workout", delete_mock), patches[6], patches[7]:
             result = sync_module.sync_routines()
         assert result["updated"] == 1
         # Restoring the old date is not counted as a new schedule.
@@ -336,7 +342,7 @@ class TestSyncRoutines:
         store, create_mock, schedule_mock, patches = self._patched(tmp_path, routines)
         schedule_mock.side_effect = RuntimeError("Garmin 429")
 
-        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7]:
             first = sync_module.sync_routines(schedule_date="2026-08-01")
 
         # The schedule failed, but the created workout is tracked (not orphaned).
@@ -352,7 +358,7 @@ class TestSyncRoutines:
         schedule_mock.side_effect = None
         delete_mock = MagicMock()
         with patches[0], patches[1], patches[2], patches[3], patches[4], \
-                patch.object(sync_module, "delete_workout", delete_mock), patches[6]:
+                patch.object(sync_module, "delete_workout", delete_mock), patches[6], patches[7]:
             second = sync_module.sync_routines()
 
         assert second["updated"] == 1
@@ -362,6 +368,70 @@ class TestSyncRoutines:
         final = store.get_synced_routine("r1")
         assert final["status"] == "success"
         assert final["scheduled_date"] == "2026-08-01"
+
+    def test_reconciles_orphan_from_garmin_library(self, tmp_path: Path) -> None:
+        # #3: the DB has no record (it was reset while the Garmin workout survived, or a
+        # prior run crashed after create but before persisting), yet a same-named workout
+        # still lives in the Garmin library. Reconciliation must find it by name and
+        # delete it before recreating, so the routine isn't duplicated on Garmin.
+        routines = [{"id": "r1", "title": "Push", "updated_at": "2026-01-01T00:00:00Z", "exercises": []}]
+        store, create_mock, _, patches = self._patched(tmp_path, routines)
+        list_mock = MagicMock(return_value=[{"workoutId": 777, "workoutName": "Push"}])
+        delete_mock = MagicMock()
+        with patches[0], patches[1], patches[2], patches[3], patches[4], \
+                patch.object(sync_module, "delete_workout", delete_mock), patches[6], \
+                patch.object(sync_module, "list_workouts", list_mock):
+            result = sync_module.sync_routines()
+        # No DB record → counted as a create, but the orphan is deleted first, not duplicated.
+        assert result["created"] == 1
+        assert result["failed"] == 0
+        delete_mock.assert_called_once_with(delete_mock.call_args[0][0], "777")
+        create_mock.assert_called_once()
+        assert store.get_synced_routine("r1")["garmin_workout_id"] == "777"
+
+    def test_reconciliation_is_best_effort_when_listing_fails(self, tmp_path: Path) -> None:
+        # If listing the Garmin library errors, sync must still proceed on DB-only dedup
+        # rather than aborting the whole run.
+        routines = [{"id": "r1", "title": "Push", "updated_at": "2026-01-01T00:00:00Z", "exercises": []}]
+        store, create_mock, _, patches = self._patched(tmp_path, routines)
+        list_mock = MagicMock(side_effect=RuntimeError("Garmin 500"))
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], \
+                patch.object(sync_module, "list_workouts", list_mock):
+            result = sync_module.sync_routines()
+        assert result["created"] == 1
+        assert result["failed"] == 0
+        create_mock.assert_called_once()
+        assert store.get_synced_routine("r1")["garmin_workout_id"] == "777"
+
+    def test_tracked_id_in_library_is_not_deleted_twice(self, tmp_path: Path) -> None:
+        # The routine is already tracked (stale hash → recreate) and its id is also the
+        # one Garmin returns. The tracked-id delete and the by-name orphan delete refer to
+        # the same workout, so it must be deleted exactly once (set-deduped).
+        routines = [{"id": "r1", "title": "Push", "updated_at": "2026-01-01T00:00:00Z", "exercises": []}]
+        store, create_mock, _, patches = self._patched(tmp_path, routines)
+        store.mark_routine_synced("r1", garmin_workout_id="555", content_hash="stale-hash")
+        list_mock = MagicMock(return_value=[{"workoutId": 555, "workoutName": "Push"}])
+        delete_mock = MagicMock()
+        with patches[0], patches[1], patches[2], patches[3], patches[4], \
+                patch.object(sync_module, "delete_workout", delete_mock), patches[6], \
+                patch.object(sync_module, "list_workouts", list_mock):
+            result = sync_module.sync_routines()
+        assert result["updated"] == 1
+        delete_mock.assert_called_once_with(delete_mock.call_args[0][0], "555")
+
+    def test_does_not_touch_differently_named_workout(self, tmp_path: Path) -> None:
+        # A library workout whose name doesn't match the routine title is unrelated and
+        # must never be deleted by reconciliation.
+        routines = [{"id": "r1", "title": "Push", "updated_at": "2026-01-01T00:00:00Z", "exercises": []}]
+        store, create_mock, _, patches = self._patched(tmp_path, routines)
+        list_mock = MagicMock(return_value=[{"workoutId": 999, "workoutName": "Legs"}])
+        delete_mock = MagicMock()
+        with patches[0], patches[1], patches[2], patches[3], patches[4], \
+                patch.object(sync_module, "delete_workout", delete_mock), patches[6], \
+                patch.object(sync_module, "list_workouts", list_mock):
+            result = sync_module.sync_routines()
+        assert result["created"] == 1
+        delete_mock.assert_not_called()
 
 
 class TestRoutineScheduleDates:

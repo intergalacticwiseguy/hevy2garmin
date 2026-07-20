@@ -6,6 +6,9 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- Routine sync now reconciles against the actual Garmin workout library before creating, so a database reset (ephemeral cloud storage, a migration) or a crash in the create→persist window no longer duplicates planned workouts. Before creating a routine's workout, any same-named workout already in the Garmin library is deleted and recreated instead of stacking a second copy — making routine sync self-healing across DB loss and mid-run failures. The listing is best-effort: if it fails, sync falls back to the previous DB-only dedup.
+
 ## [0.6.0] - 2026-07-20
 
 ### Fixed
