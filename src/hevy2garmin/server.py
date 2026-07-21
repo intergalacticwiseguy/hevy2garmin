@@ -1413,7 +1413,11 @@ async def api_routines_sync(request: Request):
         + (f", {result['scheduled']} scheduled" if result.get("scheduled") else "")
     )
     cls = "toast-error" if result["failed"] else "toast-success"
-    return HTMLResponse(f'<div class="toast {cls}">Routine sync complete: {msg}</div>')
+    # Sync's restore path can (re)schedule routines, so refresh the schedules table too.
+    return HTMLResponse(
+        f'<div class="toast {cls}">Routine sync complete: {msg}</div>',
+        headers={"HX-Trigger": "refreshSchedules"},
+    )
 
 
 @app.post("/api/routines/{hevy_routine_id}/schedule", response_class=HTMLResponse)
@@ -1450,8 +1454,10 @@ async def api_routine_schedule(request: Request, hevy_routine_id: str):
 
     n = result["scheduled"]
     span = f" ({result['dates'][0]} → {result['dates'][-1]})" if n > 1 else f" on {result['dates'][0]}"
+    # HX-Trigger fires a client event so the "Scheduled workouts" table refreshes itself.
     return HTMLResponse(
-        f'<div class="toast toast-success">Scheduled {n} session(s){span}.</div>'
+        f'<div class="toast toast-success">Scheduled {n} session(s){span}.</div>',
+        headers={"HX-Trigger": "refreshSchedules"},
     )
 
 

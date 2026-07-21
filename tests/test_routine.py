@@ -672,6 +672,20 @@ class TestScheduledWorkoutsUI:
             html = client.get("/api/routines/schedules").text
         assert "No upcoming scheduled workouts." in html
 
+    def test_schedule_route_triggers_table_refresh(self, tmp_path: Path) -> None:
+        # A successful schedule fires the HX-Trigger event the table listens for,
+        # so the "Scheduled workouts" table refreshes without a full page reload.
+        store = SQLiteDatabase(tmp_path / "ui.db")
+        store.mark_routine_synced("r1", garmin_workout_id="900", title="Push")
+        db_patch, client = self._client(store)
+        with db_patch, client, patch.object(
+            srv, "schedule_routine",
+            return_value={"scheduled": 1, "workout_id": "900", "dates": ["2999-01-05"]},
+        ):
+            resp = client.post("/api/routines/r1/schedule", data={"mode": "once", "date": "2999-01-05"})
+        assert resp.status_code == 200
+        assert resp.headers.get("HX-Trigger") == "refreshSchedules"
+
     def test_unschedule_route_removes_and_rerenders(self, tmp_path: Path) -> None:
         store = SQLiteDatabase(tmp_path / "ui.db")
         self._seed(store, 2)

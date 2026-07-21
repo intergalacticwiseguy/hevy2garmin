@@ -1,4 +1,8 @@
-<div id="scheduled-table">
+<div id="scheduled-table"
+     hx-get="/api/routines/schedules"
+     hx-trigger="refreshSchedules from:body"
+     hx-target="#scheduled-table"
+     hx-swap="outerHTML">
   {% if scheduled_workouts %}
   <table style="width:100%; border-collapse:collapse;">
     <thead>
