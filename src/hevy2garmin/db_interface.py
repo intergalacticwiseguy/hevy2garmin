@@ -162,7 +162,21 @@ class Database(ABC):
 
     @abstractmethod
     def delete_synced_routine(self, hevy_routine_id: str) -> bool:
-        """Remove a routine sync record. Returns True if a record was deleted."""
+        """Remove a routine sync record (and its calendar entries). True if deleted."""
+
+    @abstractmethod
+    def add_routine_schedule(
+        self, hevy_routine_id: str, schedule_id: str, scheduled_date: str | None = None
+    ) -> None:
+        """Record a Garmin calendar entry (``workoutScheduleId``) for a routine."""
+
+    @abstractmethod
+    def get_routine_schedule_ids(self, hevy_routine_id: str) -> list[str]:
+        """Return the Garmin calendar entry ids currently booked for a routine."""
+
+    @abstractmethod
+    def clear_routine_schedules(self, hevy_routine_id: str) -> None:
+        """Drop all tracked calendar entries for a routine (after unscheduling them)."""
 
     @abstractmethod
     def get_routine_stats(self) -> dict:

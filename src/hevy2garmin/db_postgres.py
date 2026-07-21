@@ -139,6 +139,14 @@ class PostgresDatabase(Database):
                     )
                 """)
                 cur.execute("ALTER TABLE synced_routines ADD COLUMN IF NOT EXISTS content_hash TEXT")
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS routine_schedules (
+                        hevy_routine_id TEXT NOT NULL,
+                        schedule_id TEXT NOT NULL,
+                        scheduled_date TEXT,
+                        PRIMARY KEY (hevy_routine_id, schedule_id)
+                    )
+                """)
             conn.commit()
 
     def is_synced(self, hevy_id: str) -> bool:
@@ -227,8 +235,40 @@ class PostgresDatabase(Database):
                     "DELETE FROM synced_routines WHERE hevy_routine_id = %s", (hevy_routine_id,)
                 )
                 deleted = cur.rowcount > 0
+                cur.execute(
+                    "DELETE FROM routine_schedules WHERE hevy_routine_id = %s", (hevy_routine_id,)
+                )
             conn.commit()
             return deleted
+
+    def add_routine_schedule(
+        self, hevy_routine_id: str, schedule_id: str, scheduled_date: str | None = None
+    ) -> None:
+        with self._get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO routine_schedules (hevy_routine_id, schedule_id, scheduled_date) "
+                    "VALUES (%s, %s, %s) ON CONFLICT (hevy_routine_id, schedule_id) DO NOTHING",
+                    (hevy_routine_id, str(schedule_id), scheduled_date),
+                )
+            conn.commit()
+
+    def get_routine_schedule_ids(self, hevy_routine_id: str) -> list[str]:
+        with self._get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT schedule_id FROM routine_schedules WHERE hevy_routine_id = %s",
+                    (hevy_routine_id,),
+                )
+                return [r["schedule_id"] for r in cur.fetchall()]
+
+    def clear_routine_schedules(self, hevy_routine_id: str) -> None:
+        with self._get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM routine_schedules WHERE hevy_routine_id = %s", (hevy_routine_id,)
+                )
+            conn.commit()
 
     def get_routine_stats(self) -> dict:
         with self._get_conn() as conn:

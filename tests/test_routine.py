@@ -10,7 +10,12 @@ import pytest
 from hevy2garmin import sync as sync_module
 from hevy2garmin.sync import routine_schedule_dates
 from hevy2garmin.db_sqlite import SQLiteDatabase
-from hevy2garmin.garmin import create_workout, delete_workout, schedule_workout
+from hevy2garmin.garmin import (
+    create_workout,
+    delete_workout,
+    schedule_workout,
+    unschedule_workout,
+)
 from hevy2garmin.mapper import fit_exercise_strings
 from hevy2garmin.routine import (
     ROUTINE_DESC_MARKER,
@@ -213,11 +218,27 @@ class TestGarminWorkoutOps:
 
     def test_schedule_workout_posts_date(self) -> None:
         client = MagicMock()
-        schedule_workout(client, 42, "2026-08-01")
+        client.client.request.return_value.json.return_value = {"workoutScheduleId": 99}
+        schedule_id = schedule_workout(client, 42, "2026-08-01")
         method, service, path = client.client.request.call_args[0][:3]
         assert method == "POST"
         assert path == "/workout-service/schedule/42"
         assert client.client.request.call_args[1]["json"] == {"date": "2026-08-01"}
+        # The returned scheduleId is what the caller tracks to unschedule later.
+        assert schedule_id == 99
+
+    def test_schedule_workout_returns_none_on_unparseable_body(self) -> None:
+        client = MagicMock()
+        client.client.request.return_value.json.side_effect = ValueError("no body")
+        # A missing/garbled id must not fail the schedule — it just isn't tracked.
+        assert schedule_workout(client, 42, "2026-08-01") is None
+
+    def test_unschedule_workout_deletes_entry(self) -> None:
+        client = MagicMock()
+        unschedule_workout(client, 99)
+        method, service, path = client.client.request.call_args[0][:3]
+        assert method == "DELETE"
+        assert path == "/workout-service/schedule/99"
 
 
 class TestSyncRoutines:
@@ -348,6 +369,17 @@ class TestSyncRoutines:
         assert schedule_mock.call_args[0][1:] == (777, "2026-08-01")
         # ...and the date is kept on the record instead of being wiped to None.
         assert store.get_synced_routine("r1")["scheduled_date"] == "2026-08-01"
+
+    def test_schedule_records_calendar_entry(self, tmp_path: Path) -> None:
+        # A first sync with an explicit date books the Garmin calendar and records the
+        # returned scheduleId, so a later reschedule can unschedule it instead of stacking.
+        routines = [{"id": "r1", "title": "Push", "updated_at": "2026-01-01T00:00:00Z", "exercises": []}]
+        store, _, schedule_mock, patches = self._patched(tmp_path, routines)
+        schedule_mock.return_value = 2001
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7]:
+            result = sync_module.sync_routines(schedule_date="2026-08-01")
+        assert result["scheduled"] == 1
+        assert store.get_routine_schedule_ids("r1") == ["2001"]
 
     def test_schedule_failure_persists_workout_then_recovers(self, tmp_path: Path) -> None:
         # #2 regression: create_workout succeeds, then schedule_workout errors. The
@@ -515,7 +547,9 @@ class TestRoutineScheduleDates:
 class TestScheduleRoutine:
     def _patched(self, tmp_path: Path):
         store = SQLiteDatabase(tmp_path / "sched.db")
-        schedule_mock = MagicMock()
+        # Each schedule POST returns a distinct Garmin scheduleId (1001, 1002, ...).
+        schedule_mock = MagicMock(side_effect=lambda *_a, **_k: 1000 + schedule_mock.call_count)
+        unschedule_mock = MagicMock()
         client = MagicMock()
         patches = [
             patch.object(sync_module, "load_config", return_value={
@@ -523,33 +557,49 @@ class TestScheduleRoutine:
             patch.object(sync_module.db, "get_db", return_value=store),
             patch.object(sync_module, "get_client", return_value=client),
             patch.object(sync_module, "schedule_workout", schedule_mock),
+            patch.object(sync_module, "unschedule_workout", unschedule_mock),
         ]
-        return store, schedule_mock, patches
+        return store, schedule_mock, unschedule_mock, patches
 
     def test_schedules_each_date(self, tmp_path: Path) -> None:
-        store, schedule_mock, patches = self._patched(tmp_path)
+        store, schedule_mock, _, patches = self._patched(tmp_path)
         store.mark_routine_synced("r1", garmin_workout_id="900", title="Push")
         dates = ["2026-07-20", "2026-07-27"]
-        with patches[0], patches[1], patches[2], patches[3]:
+        with patches[0], patches[1], patches[2], patches[3], patches[4]:
             result = sync_module.schedule_routine("r1", dates)
         assert result == {"scheduled": 2, "workout_id": "900", "dates": dates}
         assert schedule_mock.call_count == 2
         assert [c.args[1:] for c in schedule_mock.call_args_list] == [
             ("900", "2026-07-20"), ("900", "2026-07-27")]
-        # Earliest date persisted for display.
+        # Earliest date persisted for display, and both scheduleIds tracked.
         assert store.get_synced_routine("r1")["scheduled_date"] == "2026-07-20"
+        assert set(store.get_routine_schedule_ids("r1")) == {"1001", "1002"}
+
+    def test_reschedule_unschedules_prior_entries(self, tmp_path: Path) -> None:
+        # Item #4 regression: scheduling the same routine again must remove the prior
+        # calendar entries first (Garmin appends, so re-POSTing would stack duplicates).
+        store, schedule_mock, unschedule_mock, patches = self._patched(tmp_path)
+        store.mark_routine_synced("r1", garmin_workout_id="900", title="Push")
+        with patches[0], patches[1], patches[2], patches[3], patches[4]:
+            sync_module.schedule_routine("r1", ["2026-07-20"])
+            unschedule_mock.assert_not_called()  # nothing to remove on the first booking
+            first_ids = store.get_routine_schedule_ids("r1")
+            sync_module.schedule_routine("r1", ["2026-07-21"])
+        # The second booking unscheduled the first entry before creating the new one.
+        assert [c.args[1] for c in unschedule_mock.call_args_list] == first_ids
+        assert store.get_routine_schedule_ids("r1") == ["1002"]
 
     def test_raises_when_not_synced(self, tmp_path: Path) -> None:
-        store, schedule_mock, patches = self._patched(tmp_path)
-        with patches[0], patches[1], patches[2], patches[3]:
+        store, schedule_mock, _, patches = self._patched(tmp_path)
+        with patches[0], patches[1], patches[2], patches[3], patches[4]:
             with pytest.raises(ValueError, match="not synced"):
                 sync_module.schedule_routine("missing", ["2026-07-20"])
         schedule_mock.assert_not_called()
 
     def test_raises_on_empty_dates(self, tmp_path: Path) -> None:
-        store, _, patches = self._patched(tmp_path)
+        store, _, _, patches = self._patched(tmp_path)
         store.mark_routine_synced("r1", garmin_workout_id="900")
-        with patches[0], patches[1], patches[2], patches[3]:
+        with patches[0], patches[1], patches[2], patches[3], patches[4]:
             with pytest.raises(ValueError):
                 sync_module.schedule_routine("r1", [])
 

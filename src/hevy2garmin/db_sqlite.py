@@ -134,6 +134,14 @@ class SQLiteDatabase(Database):
                 status TEXT DEFAULT 'success'
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS routine_schedules (
+                hevy_routine_id TEXT NOT NULL,
+                schedule_id TEXT NOT NULL,
+                scheduled_date TEXT,
+                PRIMARY KEY (hevy_routine_id, schedule_id)
+            )
+        """)
         # Migration: add content_hash to routine tables created before it existed.
         try:
             conn.execute("ALTER TABLE synced_routines ADD COLUMN content_hash TEXT")
@@ -220,9 +228,41 @@ class SQLiteDatabase(Database):
             "DELETE FROM synced_routines WHERE hevy_routine_id = ?", (hevy_routine_id,)
         )
         deleted = cur.rowcount > 0
+        conn.execute(
+            "DELETE FROM routine_schedules WHERE hevy_routine_id = ?", (hevy_routine_id,)
+        )
         conn.commit()
         conn.close()
         return deleted
+
+    def add_routine_schedule(
+        self, hevy_routine_id: str, schedule_id: str, scheduled_date: str | None = None
+    ) -> None:
+        conn = self._get_conn()
+        conn.execute(
+            "INSERT INTO routine_schedules (hevy_routine_id, schedule_id, scheduled_date) "
+            "VALUES (?, ?, ?) ON CONFLICT(hevy_routine_id, schedule_id) DO NOTHING",
+            (hevy_routine_id, str(schedule_id), scheduled_date),
+        )
+        conn.commit()
+        conn.close()
+
+    def get_routine_schedule_ids(self, hevy_routine_id: str) -> list[str]:
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT schedule_id FROM routine_schedules WHERE hevy_routine_id = ?",
+            (hevy_routine_id,),
+        ).fetchall()
+        conn.close()
+        return [r[0] for r in rows]
+
+    def clear_routine_schedules(self, hevy_routine_id: str) -> None:
+        conn = self._get_conn()
+        conn.execute(
+            "DELETE FROM routine_schedules WHERE hevy_routine_id = ?", (hevy_routine_id,)
+        )
+        conn.commit()
+        conn.close()
 
     def get_routine_stats(self) -> dict:
         conn = self._get_conn()

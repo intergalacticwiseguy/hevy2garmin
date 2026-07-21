@@ -39,6 +39,7 @@ def _make_db(tmp_path):
                 cur.execute("DELETE FROM sync_log")
                 cur.execute("DELETE FROM hr_cache")
                 cur.execute("DELETE FROM synced_routines")
+                cur.execute("DELETE FROM routine_schedules")
             conn.commit()
         return db
     return SQLiteDatabase(tmp_path / "test.db")
@@ -79,6 +80,25 @@ class TestRoutineTracking:
         assert db.delete_synced_routine("r1") is True
         assert db.is_routine_synced("r1") is False
         assert db.delete_synced_routine("r1") is False
+
+    def test_routine_schedule_round_trip(self, tmp_path: Path) -> None:
+        db = _make_db(tmp_path)
+        db.add_routine_schedule("r1", "111", "2026-07-20")
+        db.add_routine_schedule("r1", "222", "2026-07-27")
+        assert set(db.get_routine_schedule_ids("r1")) == {"111", "222"}
+        # Re-adding the same id is a no-op (idempotent), not a duplicate/error.
+        db.add_routine_schedule("r1", "111", "2026-07-20")
+        assert set(db.get_routine_schedule_ids("r1")) == {"111", "222"}
+        db.clear_routine_schedules("r1")
+        assert db.get_routine_schedule_ids("r1") == []
+
+    def test_delete_synced_routine_clears_schedules(self, tmp_path: Path) -> None:
+        db = _make_db(tmp_path)
+        db.mark_routine_synced("r1", garmin_workout_id="w1")
+        db.add_routine_schedule("r1", "111", "2026-07-20")
+        assert db.delete_synced_routine("r1") is True
+        # Removing the routine also drops its tracked calendar entries.
+        assert db.get_routine_schedule_ids("r1") == []
 
     def test_content_hash_round_trip(self, tmp_path: Path) -> None:
         db = _make_db(tmp_path)

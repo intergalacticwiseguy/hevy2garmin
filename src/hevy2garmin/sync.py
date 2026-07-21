@@ -27,6 +27,7 @@ from hevy2garmin.garmin import (
     rename_activity,
     schedule_workout,
     set_description,
+    unschedule_workout,
     upload_fit,
 )
 from hevy2garmin.hevy import HevyClient
@@ -785,6 +786,27 @@ def fetch_all_routines(hevy: HevyClient, page_size: int = 10) -> list[dict]:
     return routines
 
 
+def _reschedule_routine(client, store, hevy_routine_id, workout_id, dates: list[str]) -> None:
+    """Book ``dates`` for a routine's workout, replacing its prior calendar entries.
+
+    Garmin appends a fresh calendar entry on every schedule POST (no server-side
+    dedup), so re-scheduling would stack duplicates. We unschedule every entry we
+    previously tracked for this routine first — best-effort, since an id whose
+    workout was already deleted just 404s — then book the new dates and record the
+    ids Garmin returns so the next reschedule can clean them up too.
+    """
+    for old_id in store.get_routine_schedule_ids(hevy_routine_id):
+        try:
+            unschedule_workout(client, old_id)
+        except Exception:
+            logger.warning("  Could not unschedule stale calendar entry %s", old_id)
+    store.clear_routine_schedules(hevy_routine_id)
+    for day in dates:
+        schedule_id = schedule_workout(client, workout_id, day)
+        if schedule_id is not None:
+            store.add_routine_schedule(hevy_routine_id, str(schedule_id), day)
+
+
 def sync_routines(
     config: dict[str, Any] | None = None,
     dry_run: bool = False,
@@ -951,7 +973,12 @@ def sync_routines(
                     content_hash=content_hash,
                     status="schedule_pending",
                 )
-                schedule_workout(garmin_client, workout_id, effective_schedule_date)
+                # The old workout (and its Garmin calendar entries) was just deleted,
+                # so unschedule prior tracked ids too and record the new entry — keeps
+                # a later manual reschedule idempotent instead of stacking duplicates.
+                _reschedule_routine(
+                    garmin_client, store, rid, workout_id, [effective_schedule_date]
+                )
                 if schedule_date:
                     stats["scheduled"] += 1
 
@@ -1048,8 +1075,9 @@ def schedule_routine(
     logger.info("Authenticating with Garmin Connect...")
     client = get_client(garmin_email, garmin_password, garmin_token_dir)
 
-    for day in dates:
-        schedule_workout(client, workout_id, day)
+    # Unschedule the routine's prior calendar entries before booking the new dates,
+    # so re-scheduling replaces rather than stacks duplicate entries (Garmin appends).
+    _reschedule_routine(client, store, hevy_routine_id, workout_id, dates)
 
     store.mark_routine_synced(
         hevy_routine_id,
