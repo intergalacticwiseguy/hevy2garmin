@@ -100,6 +100,31 @@ class TestRoutineTracking:
         # Removing the routine also drops its tracked calendar entries.
         assert db.get_routine_schedule_ids("r1") == []
 
+    def test_upcoming_schedules_filters_orders_and_paginates(self, tmp_path: Path) -> None:
+        db = _make_db(tmp_path)
+        db.mark_routine_synced("r1", garmin_workout_id="w1", title="Push")
+        db.mark_routine_synced("r2", garmin_workout_id="w2", title="Pull")
+        db.add_routine_schedule("r1", "s-past", "2026-06-01")   # past → excluded
+        db.add_routine_schedule("r1", "s-b", "2026-07-27")
+        db.add_routine_schedule("r2", "s-a", "2026-07-20")
+        today = "2026-07-15"
+        # Only future entries are counted, and the title comes from the join.
+        assert db.count_upcoming_routine_schedules(today) == 2
+        page1 = db.get_upcoming_routine_schedules(today, 1, 0)
+        assert [(r["scheduled_date"], r["title"]) for r in page1] == [("2026-07-20", "Pull")]
+        page2 = db.get_upcoming_routine_schedules(today, 1, 1)
+        assert [(r["scheduled_date"], r["title"]) for r in page2] == [("2026-07-27", "Push")]
+        assert page2[0]["schedule_id"] == "s-b" and page2[0]["hevy_routine_id"] == "r1"
+
+    def test_delete_routine_schedule_one_entry(self, tmp_path: Path) -> None:
+        db = _make_db(tmp_path)
+        db.add_routine_schedule("r1", "111", "2026-07-20")
+        db.add_routine_schedule("r1", "222", "2026-07-27")
+        assert db.delete_routine_schedule("r1", "111") is True
+        assert db.get_routine_schedule_ids("r1") == ["222"]
+        # Deleting a non-existent entry reports no removal.
+        assert db.delete_routine_schedule("r1", "999") is False
+
     def test_content_hash_round_trip(self, tmp_path: Path) -> None:
         db = _make_db(tmp_path)
         db.mark_routine_synced("r1", garmin_workout_id="w1", content_hash="abc123")

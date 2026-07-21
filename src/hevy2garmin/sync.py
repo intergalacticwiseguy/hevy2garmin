@@ -1089,3 +1089,31 @@ def schedule_routine(
     )
     logger.info("Scheduled routine %s on %d date(s)", hevy_routine_id, len(dates))
     return {"scheduled": len(dates), "workout_id": workout_id, "dates": dates}
+
+
+def unschedule_routine_entry(
+    hevy_routine_id: str,
+    schedule_id: str,
+    *,
+    config: dict[str, Any] | None = None,
+    **overrides: Any,
+) -> None:
+    """Remove one Garmin calendar entry of a routine and stop tracking it.
+
+    Unscheduling is best-effort — an entry already gone on Garmin just 404s — but
+    the local row is always dropped afterward so the UI reflects the removal.
+    """
+    cfg = config or load_config()
+    store = _resolve_store()
+    garmin_email = overrides.get("garmin_email") or cfg.get("garmin_email")
+    garmin_password = overrides.get("garmin_password") or cfg.get("garmin_password", "")
+    garmin_token_dir = cfg.get("garmin_token_dir", "~/.garminconnect")
+
+    logger.info("Authenticating with Garmin Connect...")
+    client = get_client(garmin_email, garmin_password, garmin_token_dir)
+    try:
+        unschedule_workout(client, schedule_id)
+    except Exception:
+        logger.warning("  Could not unschedule calendar entry %s", schedule_id)
+    store.delete_routine_schedule(hevy_routine_id, schedule_id)
+    logger.info("Unscheduled routine %s entry %s", hevy_routine_id, schedule_id)

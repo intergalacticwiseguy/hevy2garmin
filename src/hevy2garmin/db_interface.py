@@ -179,6 +179,24 @@ class Database(ABC):
         """Drop all tracked calendar entries for a routine (after unscheduling them)."""
 
     @abstractmethod
+    def delete_routine_schedule(self, hevy_routine_id: str, schedule_id: str) -> bool:
+        """Drop one tracked calendar entry. Returns True if a row was removed."""
+
+    @abstractmethod
+    def get_upcoming_routine_schedules(
+        self, on_or_after: str, limit: int, offset: int
+    ) -> list[dict]:
+        """Return scheduled calendar entries on/after ``on_or_after`` (ISO date), with
+        the routine title, ordered by date. Paginated via ``limit``/``offset``.
+
+        Each dict has ``hevy_routine_id``, ``schedule_id``, ``scheduled_date``, ``title``.
+        """
+
+    @abstractmethod
+    def count_upcoming_routine_schedules(self, on_or_after: str) -> int:
+        """Count scheduled calendar entries on/after ``on_or_after`` (for pagination)."""
+
+    @abstractmethod
     def get_routine_stats(self) -> dict:
         """Return routine sync counts: ``{"synced": int, "scheduled": int}``."""
 

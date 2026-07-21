@@ -7,6 +7,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from fastapi.testclient import TestClient
+
+import hevy2garmin.server as srv
 from hevy2garmin import sync as sync_module
 from hevy2garmin.sync import routine_schedule_dates
 from hevy2garmin.db_sqlite import SQLiteDatabase
@@ -602,6 +605,89 @@ class TestScheduleRoutine:
         with patches[0], patches[1], patches[2], patches[3], patches[4]:
             with pytest.raises(ValueError):
                 sync_module.schedule_routine("r1", [])
+
+
+class TestUnscheduleRoutineEntry:
+    def _patched(self, tmp_path: Path):
+        store = SQLiteDatabase(tmp_path / "unsched.db")
+        unschedule_mock = MagicMock()
+        patches = [
+            patch.object(sync_module, "load_config", return_value={
+                "garmin_email": "e", "garmin_password": "p"}),
+            patch.object(sync_module.db, "get_db", return_value=store),
+            patch.object(sync_module, "get_client", return_value=MagicMock()),
+            patch.object(sync_module, "unschedule_workout", unschedule_mock),
+        ]
+        return store, unschedule_mock, patches
+
+    def test_unschedules_and_removes_row(self, tmp_path: Path) -> None:
+        store, unschedule_mock, patches = self._patched(tmp_path)
+        store.add_routine_schedule("r1", "111", "2026-07-20")
+        store.add_routine_schedule("r1", "222", "2026-07-27")
+        with patches[0], patches[1], patches[2], patches[3]:
+            sync_module.unschedule_routine_entry("r1", "111")
+        assert unschedule_mock.call_args[0][1] == "111"
+        # Only the removed entry is dropped from tracking.
+        assert store.get_routine_schedule_ids("r1") == ["222"]
+
+    def test_removes_row_even_when_garmin_errors(self, tmp_path: Path) -> None:
+        # A Garmin failure (e.g. entry already gone) must not leave a stuck row.
+        store, unschedule_mock, patches = self._patched(tmp_path)
+        unschedule_mock.side_effect = RuntimeError("Garmin 500")
+        store.add_routine_schedule("r1", "111", "2026-07-20")
+        with patches[0], patches[1], patches[2], patches[3]:
+            sync_module.unschedule_routine_entry("r1", "111")
+        assert store.get_routine_schedule_ids("r1") == []
+
+
+class TestScheduledWorkoutsUI:
+    def _client(self, store: SQLiteDatabase):
+        srv._is_configured_cache = True  # skip the "not configured → /setup" redirect
+        return patch.object(srv.db, "get_db", return_value=store), TestClient(srv.app)
+
+    def _seed(self, store: SQLiteDatabase, n: int) -> None:
+        store.mark_routine_synced("r1", garmin_workout_id="w1", title="Push")
+        # Far-future dates so they always count as "upcoming" regardless of today.
+        for i in range(n):
+            store.add_routine_schedule("r1", f"s{i}", f"2999-01-{i + 1:02d}")
+
+    def test_schedules_fragment_paginates_and_clamps(self, tmp_path: Path) -> None:
+        store = SQLiteDatabase(tmp_path / "ui.db")
+        self._seed(store, 11)  # 11 entries → 2 pages of 10
+        db_patch, client = self._client(store)
+        with db_patch, client:
+            page1 = client.get("/api/routines/schedules?page=1").text
+            page2 = client.get("/api/routines/schedules?page=2").text
+            clamped = client.get("/api/routines/schedules?page=99").text
+        assert "Page 1 of 2" in page1
+        assert "2999-01-11" not in page1  # the 11th entry is on page 2
+        assert "Page 2 of 2" in page2 and "2999-01-11" in page2
+        # Out-of-range page clamps to the last page rather than erroring.
+        assert "Page 2 of 2" in clamped
+
+    def test_empty_state(self, tmp_path: Path) -> None:
+        store = SQLiteDatabase(tmp_path / "ui.db")
+        db_patch, client = self._client(store)
+        with db_patch, client:
+            html = client.get("/api/routines/schedules").text
+        assert "No upcoming scheduled workouts." in html
+
+    def test_unschedule_route_removes_and_rerenders(self, tmp_path: Path) -> None:
+        store = SQLiteDatabase(tmp_path / "ui.db")
+        self._seed(store, 2)
+        db_patch, client = self._client(store)
+        unschedule_mock = MagicMock()
+        with db_patch, client, \
+                patch.object(sync_module, "load_config", return_value={
+                    "garmin_email": "e", "garmin_password": "p"}), \
+                patch.object(sync_module, "get_client", return_value=MagicMock()), \
+                patch.object(sync_module, "unschedule_workout", unschedule_mock):
+            resp = client.post("/api/routines/r1/schedule/s0/unschedule?page=1")
+        assert resp.status_code == 200
+        unschedule_mock.assert_called_once()
+        # The entry is gone and the refreshed fragment is returned.
+        assert store.get_routine_schedule_ids("r1") == ["s1"]
+        assert 'id="scheduled-table"' in resp.text
 
 
 class TestDbFacade:

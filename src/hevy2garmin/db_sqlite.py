@@ -264,6 +264,43 @@ class SQLiteDatabase(Database):
         conn.commit()
         conn.close()
 
+    def delete_routine_schedule(self, hevy_routine_id: str, schedule_id: str) -> bool:
+        conn = self._get_conn()
+        cur = conn.execute(
+            "DELETE FROM routine_schedules WHERE hevy_routine_id = ? AND schedule_id = ?",
+            (hevy_routine_id, str(schedule_id)),
+        )
+        deleted = cur.rowcount > 0
+        conn.commit()
+        conn.close()
+        return deleted
+
+    def get_upcoming_routine_schedules(
+        self, on_or_after: str, limit: int, offset: int
+    ) -> list[dict]:
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT rs.hevy_routine_id, rs.schedule_id, rs.scheduled_date, sr.title "
+            "FROM routine_schedules rs "
+            "LEFT JOIN synced_routines sr ON rs.hevy_routine_id = sr.hevy_routine_id "
+            "WHERE rs.scheduled_date >= ? "
+            "ORDER BY rs.scheduled_date ASC, sr.title ASC "
+            "LIMIT ? OFFSET ?",
+            (on_or_after, limit, offset),
+        ).fetchall()
+        conn.close()
+        keys = ("hevy_routine_id", "schedule_id", "scheduled_date", "title")
+        return [dict(zip(keys, r)) for r in rows]
+
+    def count_upcoming_routine_schedules(self, on_or_after: str) -> int:
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT COUNT(*) FROM routine_schedules WHERE scheduled_date >= ?",
+            (on_or_after,),
+        ).fetchone()
+        conn.close()
+        return row[0] or 0
+
     def get_routine_stats(self) -> dict:
         conn = self._get_conn()
         row = conn.execute(

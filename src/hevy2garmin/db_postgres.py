@@ -270,6 +270,42 @@ class PostgresDatabase(Database):
                 )
             conn.commit()
 
+    def delete_routine_schedule(self, hevy_routine_id: str, schedule_id: str) -> bool:
+        with self._get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM routine_schedules WHERE hevy_routine_id = %s AND schedule_id = %s",
+                    (hevy_routine_id, str(schedule_id)),
+                )
+                deleted = cur.rowcount > 0
+            conn.commit()
+            return deleted
+
+    def get_upcoming_routine_schedules(
+        self, on_or_after: str, limit: int, offset: int
+    ) -> list[dict]:
+        with self._get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT rs.hevy_routine_id, rs.schedule_id, rs.scheduled_date, sr.title "
+                    "FROM routine_schedules rs "
+                    "LEFT JOIN synced_routines sr ON rs.hevy_routine_id = sr.hevy_routine_id "
+                    "WHERE rs.scheduled_date >= %s "
+                    "ORDER BY rs.scheduled_date ASC, sr.title ASC "
+                    "LIMIT %s OFFSET %s",
+                    (on_or_after, limit, offset),
+                )
+                return [dict(r) for r in cur.fetchall()]
+
+    def count_upcoming_routine_schedules(self, on_or_after: str) -> int:
+        with self._get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT COUNT(*) AS n FROM routine_schedules WHERE scheduled_date >= %s",
+                    (on_or_after,),
+                )
+                return cur.fetchone()["n"]
+
     def get_routine_stats(self) -> dict:
         with self._get_conn() as conn:
             with conn.cursor() as cur:
