@@ -23,7 +23,7 @@
     "hash-wasm": "^4.12.0",
     "hevy2garmin": "^0.4.1",
     "libsodium-wrappers": "^0.8.4",
-    "next": "^16.1.0",
+    "next": "^16.3.3",
     "pg": "^8.23.0",
     "postgres": "^3.4.9",
     "react": "^19.1.0",
@@ -39,6 +39,6 @@
     "@vitest/ui": "^4.1.4",
     "tailwindcss": "^4.0.0",
     "typescript": "^5.8.0",
-    "vitest": "^4.1.4"
+    "vitest": "^4.1.11"
   }
 }
